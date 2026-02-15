@@ -1,24 +1,36 @@
+# app/main.py
 from fastapi import FastAPI
-from prometheus_client import Counter, generate_latest
-import uvicorn
+from prometheus_client import make_asgi_app, Counter, Histogram, Summary
+import time
 
 app = FastAPI()
-requests_counter = Counter('http_requests_total', 'Total HTTP requests')
+
+# Cria o app ASGI do Prometheus
+metrics_app = make_asgi_app()
+
+# Monta o endpoint /metrics
+app.mount("/metrics", metrics_app)
+
+# Exemplos de métricas customizadas (opcional, mas recomendado)
+REQUESTS = Counter('http_requests_total', 'Total de requisições HTTP', ['method', 'endpoint'])
+REQUEST_TIME = Histogram('http_request_duration_seconds', 'Tempo de requisição em segundos', ['method', 'endpoint'])
+
+@app.middleware("http")
+async def add_prometheus_metrics(request, call_next):
+    start_time = time.time()
+    response = await call_next(request)
+    duration = time.time() - start_time
+
+    REQUESTS.labels(method=request.method, endpoint=request.url.path).inc()
+    REQUEST_TIME.labels(method=request.method, endpoint=request.url.path).observe(duration)
+
+    return response
+
+# Suas rotas normais
+@app.get("/")
+async def root():
+    return {"message": "Hello World"}
 
 @app.get("/health")
-def health():
-    requests_counter.inc()
-    return {"status": "healthy"}
-
-@app.get("/metrics")
-def metrics():
-    requests_counter.inc()
-    return generate_latest()
-
-@app.post("/echo")
-def echo(data: dict):
-    requests_counter.inc()
-    return data
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+async def health():
+    return {"status": "ok"}
