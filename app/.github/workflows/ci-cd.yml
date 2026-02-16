@@ -1,0 +1,52 @@
+name: CI/CD Pipeline
+
+on:
+    push:
+        branches: [main]
+
+jobs:
+    lint-test:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v3
+            - uses: actions/setup-python@v4
+              with:
+                  python-version: "3.10"
+            - run: pip install -r requirements.txt black flake8 pytest
+            - run: black --check app/
+            - run: flake8 app/
+            - run: pytest tests/
+
+    build-push:
+        needs: lint-test
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v3
+            - uses: docker/login-action@v2
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+            - run: docker build -t ghcr.io/<seu-user>/myapp:latest -f docker/Dockerfile .
+            - run: docker push ghcr.io/<seu-user>/myapp:latest
+
+    terraform:
+        needs: build-push
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v3
+            - uses: hashicorp/setup-terraform@v2
+            - run: docker-compose -f docker/docker-compose-localstack.yml up -d # Rode LocalStack no job
+            - run: terraform -chdir=terraform init
+            - run: terraform -chdir=terraform apply -auto-approve
+
+    deploy:
+        needs: terraform
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v3
+            - uses: azure/setup-kubectl@v3
+            - run: kind create cluster --name ci # Cluster temporário para CI
+            - run: kind load docker-image ghcr.io/<seu-user>/myapp:latest --name ci
+            - run: ansible-playbook -i ansible/inventory.ini ansible/deploy-k8s.yml # Instale Ansible no job
+            - run: sleep 10 && curl http://localhost:8000/health # Smoke test (port-forward no script)
